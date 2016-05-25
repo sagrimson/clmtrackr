@@ -60,6 +60,7 @@ var clm = {
 		var relaxation = 0.1;
 		
 		var first = true;
+		var gettingPosition = false;
 		
 		var convergenceLimit = 0.01;
 		
@@ -307,29 +308,42 @@ var clm = {
 		 *  element : canvas or video element
 		 *  TODO: should be able to take img element as well
 		 */
-		this.track = function(element, box) {
-			
+		this.track = function(element, box, gi) {
 			var scaling, translateX, translateY, rotation;
 			var croppedPatches = [];
 			var ptch, px, py;
-						
-			if (first) {
-				// do viola-jones on canvas to get initial guess, if we don't have any points
-				var gi = getInitialPosition(element, box);
-				if (!gi) {
-					// send an event on no face found
-					var evt = document.createEvent("Event");
-					evt.initEvent("clmtrackrNotFound", true, true);
-					document.dispatchEvent(evt)
-					
-					return false;
-				}
+			
+			if (gi) {
+
 				scaling = gi[0];
 				rotation = gi[1];
 				translateX = gi[2];
 				translateY = gi[3];
 				
 				first = false;
+				gettingPosition = false;
+			} else if (first) {
+				// do viola-jones on canvas to get initial guess, if we don't have any points
+				if (!gettingPosition) {
+					gettingPosition = true;
+					getInitialPosition(element, box, function (gi) {
+						gettingPosition = false;
+						if (!gi) {
+							// send an event on no face found
+							var evt = document.createEvent("Event");
+							evt.initEvent("clmtrackrNotFound", true, true);
+							document.dispatchEvent(evt);
+							first = true;
+							
+							return false;
+						} else {
+							this.track(element, box, gi);
+						}
+					 	
+					}.bind(this));
+				}
+				return;
+
 			} else {
 				facecheck_count += 1;
 				
@@ -352,7 +366,7 @@ var clm = {
 				translateX = currentParameters[2];
 				translateY = currentParameters[3];
 			}
-			
+
 			// copy canvas to a new dirty canvas
 			sketchCC.save();
 			
@@ -383,8 +397,8 @@ var clm = {
 					// send event to signal that tracking was lost
 					var evt = document.createEvent("Event");
 					evt.initEvent("clmtrackrLost", true, true);
-					document.dispatchEvent(evt)
-					
+					document.dispatchEvent(evt);
+
 					return false;
 				}
 			}
@@ -786,12 +800,13 @@ var clm = {
 
 		var runnerFunction = function() {
 			runnerTimeout = requestAnimFrame(runnerFunction);
-			// schedule as many iterations as we can during each request
-			var startTime = (new Date()).getTime();
-			while (((new Date()).getTime() - startTime) < 16) {
-				var tracking = this.track(runnerElement, runnerBox);
-				if (!tracking) continue;
-			}
+			// // schedule as many iterations as we can during each request
+			// var startTime = (new Date()).getTime();
+			// while (((new Date()).getTime() - startTime) < 16) {
+			// 	var tracking = this.track(runnerElement, runnerBox);
+			// 	if (!tracking) continue;
+			// }
+			this.track(runnerElement, runnerBox);
 		}.bind(this);
 		
 		var getWebGLResponsesType = function(type, patches) {
@@ -899,25 +914,13 @@ var clm = {
 			return positions;
 		}
 		
-		// detect position of face on canvas/video element
-		var detectPosition = function(el) {
-			var canvas = document.createElement('canvas');
-			canvas.width = el.width;
-			canvas.height = el.height;
-			var cc = canvas.getContext('2d');
-			cc.drawImage(el, 0, 0, el.width, el.height);
-			
-			// do viola-jones on canvas to get initial guess, if we don't have any points
-			/*var comp = ccv.detect_objects(
-				ccv.grayscale(canvas), ccv.cascade, 5, 1
-			);*/
-			
-			var jf = new jsfeat_face(canvas);
-			var comp = jf.findFace();
-			
-			if (comp.length > 0) {
+		var faceDetected = function (e, callback) {
+			var comp = e.data.comp;
+
+			if (comp && comp.length > 0) {
 				candidate = comp[0];
 			} else {
+				callback(false);
 				return false;
 			}
 			
@@ -927,7 +930,21 @@ var clm = {
 				}
 			}
 			
-			return candidate;
+			// return candidate;
+			callback(candidate);
+		}
+
+		// detect position of face on canvas/video element
+		var detectPosition = function(el, callback) {
+			var canvas = document.createElement('canvas');
+			canvas.width = el.width;
+			canvas.height = el.height;
+			var cc = canvas.getContext('2d');
+			cc.drawImage(el, 0, 0, el.width, el.height);
+
+			var jf = new jsfeat_face(canvas);
+			jf.faceDetected = faceDetected;
+			var comp = jf.findFace(callback);
 		}
 		
 		// part one of meanshift calculation
@@ -1034,16 +1051,24 @@ var clm = {
 		}
 		
 		// get initial starting point for model
-		var getInitialPosition = function(element, box) {
+		var getInitialPosition = function(element, box, callback, det) {
+
 			var translateX, translateY, scaling, rotation;
 			if (box) {
 				candidate = {x : box[0], y : box[1], width : box[2], height : box[3]};
 			} else {
-				var det = detectPosition(element);
 				if (!det) {
-					// if no face found, stop.
-					return false;
+					detectPosition(element, function (det) {
+						if (!det) {
+							// if no face found, stop.
+							callback(false);
+						} else {
+							getInitialPosition(element, box, callback, det);
+						}
+					});
+					return;
 				}
+
 			}
 			
 			if (model.hints && mosseFilter && left_eye_filter && right_eye_filter && nose_filter) {
@@ -1068,7 +1093,7 @@ var clm = {
 				left_eye_position[1] = Math.round(candidate.y+candidate.height*(2/5)-(eyeFilterWidth/2))+left_result[1];
 				nose_position[0] = Math.round(candidate.x+(candidate.width/2)-(noseFilterWidth/2))+nose_result[0];
 				nose_position[1] = Math.round(candidate.y+candidate.height*(5/8)-(noseFilterWidth/2))+nose_result[1];
-				
+			
 				//
 				/*canvasContext.strokeRect(Math.round(candidate.x+(candidate.width*3/4)-(eyeFilterWidth/2)), Math.round(candidate.y+candidate.height*(2/5)-(eyeFilterWidth/2)), eyeFilterWidth, eyeFilterWidth);
 				canvasContext.strokeRect(Math.round(candidate.x+(candidate.width/4)-(eyeFilterWidth/2)), Math.round(candidate.y+candidate.height*(2/5)-(eyeFilterWidth/2)), eyeFilterWidth, eyeFilterWidth);
@@ -1161,10 +1186,10 @@ var clm = {
 				currentParameters[2] = translateX;
 				currentParameters[3] = translateY;
 			}
-		
-			currentPositions = calculatePositions(currentParameters, true);
 			
-			return [scaling, rotation, translateX, translateY];
+			currentPositions = calculatePositions(currentParameters, true);
+
+			callback([scaling, rotation, translateX, translateY]);
 		}
 		
 		// draw a parametrized line on a canvas
@@ -2372,7 +2397,6 @@ var webglFilter = function() {
     var dist = max-min;
     
     if (dist == 0) {
-      console.log("a patchresponse was monotone, causing normalization to fail. Leaving it unchanged.")
       response = response.map(function() {return 1});
     } else {
       for (var i = 0;i < msize;i++) {
@@ -7814,44 +7838,31 @@ var jsfeat_face = function(image) {
     work_ctx = image.getContext('2d');
   }
   
-  img_u8 = new jsfeat.matrix_t(w, h, jsfeat.U8_t | jsfeat.C1_t);
-  ii_sum = new Int32Array((w+1)*(h+1));
-  ii_sqsum = new Int32Array((w+1)*(h+1));
-  ii_tilted = new Int32Array((w+1)*(h+1));
+  // img_u8 = new jsfeat.matrix_t(w, h, jsfeat.U8_t | jsfeat.C1_t);
+  // ii_sum = new Int32Array((w+1)*(h+1));
+  // ii_sqsum = new Int32Array((w+1)*(h+1));
+  // ii_tilted = new Int32Array((w+1)*(h+1));
   
-  var classifier = jsfeat.haar.frontalface;
+  // var classifier = jsfeat.haar.frontalface;
   
-  this.findFace = function () {
+  this.findFace = function (callback) {
     if (image.tagName == 'VIDEO' || image.tagName == 'IMG') {
       work_ctx.drawImage(image, 0, 0);
     } 
     var imageData = work_ctx.getImageData(0, 0, w, h);
-                  
-    jsfeat.imgproc.grayscale(imageData.data, img_u8.data);
-    
-    jsfeat.imgproc.equalize_histogram(img_u8, img_u8);
-    
-    jsfeat.imgproc.compute_integral_image(img_u8, ii_sum, ii_sqsum, null);
 
-    var rects = jsfeat.haar.detect_multi_scale(ii_sum, ii_sqsum, ii_tilted, null, img_u8.cols, img_u8.rows, classifier, 1.15, 2);
-    
-    rects = jsfeat.haar.group_rectangles(rects, 1);
-    
-    var rl = rects.length;
-    
-    if (rl > 0) {
-      var best = rects[0];
-      for (var i = 1;i < rl;i++) {
-          if (rects[i].neighbors > best.neighbors) {
-              best = rects[i]
-          } else if (rects[i].neighbors == best.neighbors) {
-              if (rects[i].confidence > best.confidence) best = rects[i];
-          }
-      }
-      return [best];
-    } else {
-      return false;
-    }
+    var worker = new Worker('bower_components/clmtrackr/findFace.js');
+
+    worker.addEventListener('message', function (e) {
+    	this.faceDetected(e, callback);
+    }.bind(this), false);
+
+    worker.postMessage({
+    	w: w,
+    	h: h,
+    	imageData:imageData
+    });
+
   }
   
 }
