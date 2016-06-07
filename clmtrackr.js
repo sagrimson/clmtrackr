@@ -304,6 +304,11 @@ var clm = {
 			cancelRequestAnimFrame(runnerTimeout);
 		}
 
+		this.recheck = function () {
+			console.log('RECHECKING');
+			first = true;
+		}
+
 		/*
 		 *  element : canvas or video element
 		 *  TODO: should be able to take img element as well
@@ -312,7 +317,7 @@ var clm = {
 			var scaling, translateX, translateY, rotation;
 			var croppedPatches = [];
 			var ptch, px, py;
-			
+
 			if (gi) {
 
 				scaling = gi[0];
@@ -557,6 +562,7 @@ var clm = {
 				}
 				var paramUpdateLeft = numeric.add(prior, jtj);
 				var paramUpdateRight = numeric.sub(priorP, jtv);
+				
 				var paramUpdate = numeric.dot(numeric.inv(paramUpdateLeft), paramUpdateRight);
 				//var paramUpdate = numeric.solve(paramUpdateLeft, paramUpdateRight, true);
 				
@@ -7851,7 +7857,7 @@ var jsfeat_face = function(image) {
     } 
     var imageData = work_ctx.getImageData(0, 0, w, h);
 
-    var worker = new Worker('bower_components/clmtrackr/findFace.js');
+    var worker = new Worker('workers/findFace.worker');
 
     worker.addEventListener('message', function (e) {
     	this.faceDetected(e, callback);
